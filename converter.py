@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import signal
 
 import paho.mqtt.client as mqtt
 from prometheus_client import Counter, Gauge, start_http_server
@@ -41,8 +42,12 @@ def parse_metrics(data, labels):
     
 
 def on_connect(client, userdata, flags, rc):
-    logging.debug("Connected to MQTT broker with return code " + str(rc))
-    client.subscribe("tele/#")
+    if rc == 0:
+        print("Connected to MQTT broker")
+        client.subscribe("tele/#")
+    else:
+        logging.error("Connected to MQTT broker with return code " + str(rc))
+        exithandler()
 
 
 def on_message(client, userdata, msg):
@@ -65,7 +70,7 @@ def on_message(client, userdata, msg):
     labels = {}
     if len(topic_elems) % 2 != 0:
         logging.error("Inner topic parts are not an even number of elements. Fix pls!")
-        exit(1)
+        exithandler()
     else:
         it = iter(topic_elems)
         for key in it:
@@ -77,7 +82,7 @@ def on_message(client, userdata, msg):
         messages_counter = Counter("processed_messages", "MQTT messages processed for this topic", label_keys + ["type"])
     elif label_keys != list(labels.keys()):
         logging.error("Label keys [" + ",".join(labels.keys()) + "] do not match the keys stored from the first message.")
-        exit(1)
+        exithandler()
 
     labels_for_counter = list(labels.values()) + [name]
     messages_counter.labels(*labels_for_counter).inc()
@@ -98,6 +103,17 @@ def on_log(client, userdata, level, buf):
         logging.warning("MQTT WARNING: " + buf)
 
 
+def exithandler(signum=-1, stackframe=None):
+    if signum == signal.SIGINT:
+        print("SIGINT received, exiting...")
+    elif signum == signal.SIGTERM:
+        print("SIGTERM received, exiting...")
+    elif signum < 0:
+        print("Error occured, exiting...")
+        exit(1)
+
+    exit(0)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output.")
@@ -117,6 +133,10 @@ if __name__ == "__main__":
     elif not 0 < args.mqttport < 65536:
         logging.error("Invalid port number for prometheus.")
         exit(1)
+
+    # Setup signal handling
+    signal.signal(signal.SIGINT, exithandler)
+    signal.signal(signal.SIGTERM, exithandler)
 
     # Setup logging
     if args.debug:
