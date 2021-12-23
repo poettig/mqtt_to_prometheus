@@ -4,9 +4,15 @@ import argparse
 import json
 import logging
 import signal
+import os
 
 import paho.mqtt.client as mqtt
 from prometheus_client import Counter, Gauge, start_http_server
+
+relevant_message_types = [
+    "STATE",
+    "SENSOR",
+]
 
 label_keys = None
 messages_counter = None
@@ -70,11 +76,18 @@ def on_message(client, userdata, msg):
     labels = {}
     if len(topic_elems) % 2 != 0:
         logging.error("Inner topic parts are not an even number of elements. Fix pls!")
+        logging.error(f"{topic_elems}")
         exithandler()
     else:
         it = iter(topic_elems)
         for key in it:
             labels[key] = next(it)
+
+    # Check if the last part of the topic is one of the relevant message types
+    if name not in relevant_message_types:
+        logging.debug(f"Ignored message: {topic} {payload}")
+        return
+
 
     # Check if the label keys match the stores ones. If none are stored, initialize it and the counter
     if label_keys is None:
@@ -117,13 +130,14 @@ def exithandler(signum=-1, stackframe=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output.")
     parser.add_argument("-c", "--certpath", default="/etc/ssl/certs/", help="Path to the directory that stores CA certificates.")
     parser.add_argument("-mh", "--mqtthost", default="localhost", help="Address of MQTT broker to connect to.")
     parser.add_argument("-mp", "--mqttport", type=int, default=1883, help="Port of MQTT broker to connect to.")
     parser.add_argument("-pa", "--prometheusaddress", default="localhost", help="Address to bind to for prometheus metric exposition.")
     parser.add_argument("-pp", "--prometheusport", type=int, default=9337, help="Port to bind to for prometheus metric exposition.")
     parser.add_argument("-u", "--username", help="Username for MQTT broker authentication.")
-    parser.add_argument("-p", "--password", help="Password for MQTT broker authentication.")
+    parser.add_argument("-p", "--password", default=os.environ.get("MQTT_PASSWORD"), help="DO NOT USE THIS, INSTEAD SET THE MQTT_PASSWORD ENV VAR ACCORDINGLY. Password for MQTT broker authentication.")
     args = parser.parse_args()
 
     # Check args
@@ -141,6 +155,8 @@ if __name__ == "__main__":
     # Setup logging
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
+    elif args.verbose:
+        logging.basicConfig(level=logging.INFO)
     else:
         logging.basicConfig(level=logging.WARN)
 
