@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import re
 import signal
 import os
 
@@ -17,6 +18,21 @@ relevant_message_types = [
 label_keys = None
 messages_counter = None
 gauges = dict()
+
+
+# https://stackoverflow.com/a/1176023/6371499
+class CamelToSnakeConverter:
+	def __init__(self):
+		self.any_char_followed_by_uppercase_letter_pattern = re.compile(r"(.)([A-Z][a-z]+)")
+		self.lower_or_number_followed_by_uppercase_letter_pattern = re.compile(r"([a-z0-9])([A-Z])")
+
+	def convert(self, string: str):
+		result = self.any_char_followed_by_uppercase_letter_pattern.sub(r"\1_\2", string)
+		result = self.lower_or_number_followed_by_uppercase_letter_pattern.sub(r"\1_\2", result)
+		return result.lower()
+
+
+camel_to_snake_converter = CamelToSnakeConverter()
 
 
 def extract_metrics(data):
@@ -37,19 +53,24 @@ def extract_metrics(data):
 
 def parse_metrics(data, labels):
 	for key, value in extract_metrics(data):
-		if key not in gauges:
+		prefixed_key = f"tasmota_{camel_to_snake_converter.convert(key)}"
+
+		if prefixed_key not in gauges:
 			# Create new gauge
-			gauges[key] = Gauge(key, "Value of the " + key + " reading", labels.keys())
-			logging.debug("Created gauge " + key)
+			gauges[prefixed_key] = Gauge(prefixed_key, "Value of the " + prefixed_key + " reading", labels.keys())
+			logging.debug("Created gauge " + prefixed_key)
 
 		# Set new metric value
-		gauges[key].labels(*labels.values()).set(value)
-		logging.debug("Set value of " + key + "{" + ",".join(labels.keys()) + "} to " + str(value))
+		gauges[prefixed_key].labels(*labels.values()).set(value)
+
+		if logging.root.level == logging.DEBUG:
+			labels_as_strings = [key + '=' + value for key, value in labels.items()]
+			logging.debug(f"Set value of {prefixed_key}{{{', '.join(labels_as_strings)}}} to {value}")
 
 
 def on_connect(client, userdata, flags, rc):
 	if rc == 0:
-		print("Connected to MQTT broker")
+		logging.info("Connected to MQTT broker")
 		client.subscribe("tele/#")
 	else:
 		logging.error("Connected to MQTT broker with return code " + str(rc))
@@ -63,7 +84,7 @@ def on_message(client, userdata, msg):
 	topic = msg.topic
 	payload = msg.payload.decode()
 
-	logging.debug("Received message " + payload)
+	logging.debug(f"Received message {topic} {payload}")
 
 	# Split and remove tele/
 	topic_elems = topic.split("/")[1:]
