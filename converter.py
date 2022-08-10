@@ -47,6 +47,7 @@ class MetricsManager:
 		self.gauges: typing.Dict[str, Gauge] = dict()
 		self.expected_label_keys = None
 		self.message_counter = None
+		self.drop_counter = None
 
 		self.filters = {}
 		for entry in config["filters"]:
@@ -83,20 +84,25 @@ class MetricsManager:
 				"MQTT messages processed for this topic",
 				self.expected_label_keys
 			)
+			self.drop_counter = Counter(
+				"tasmota_dropped_values",
+				"Number of metric values dropped because of a filter hit.",
+				self.expected_label_keys
+			)
 		elif self.expected_label_keys != list(labels.keys()):
 			logging.error(
 				"Label keys [" + ",".join(labels.keys()) + "] do not match the keys stored from the first message."
 			)
 			exithandler()
 
-		labels_for_counter = list(labels.values())
-		self.message_counter.labels(*labels_for_counter).inc()
+		self.message_counter.labels(*(list(labels.values()))).inc()
 
 		for key, value in self.extract_metrics(data):
 			prefixed_key = f"tasmota_{camel_to_snake_converter.convert(key)}"
 			metric = Metric(prefixed_key, value, labels)
 
 			if self.is_filtered(metric):
+				self.drop_counter.labels(*(list(labels.values()))).inc()
 				continue
 
 			if prefixed_key not in self.gauges:
