@@ -48,10 +48,10 @@ class MetricsManager:
 		self.expected_label_keys = None
 		self.message_counter = None
 
-		self.outlier_filters = {}
-		for entry in config["outlier_filters"]:
+		self.filters = {}
+		for entry in config["filters"]:
 			for metric_name in entry["metric_names"]:
-				self.outlier_filters[metric_name] = {
+				self.filters[metric_name] = {
 					"rules": entry["rules"],
 					"max_dropped_values": entry["max_dropped_values"],
 					"already_dropped_values": 0
@@ -96,7 +96,7 @@ class MetricsManager:
 			prefixed_key = f"tasmota_{camel_to_snake_converter.convert(key)}"
 			metric = Metric(prefixed_key, value, labels)
 
-			if self.is_outlier(metric):
+			if self.is_filtered(metric):
 				continue
 
 			if prefixed_key not in self.gauges:
@@ -111,10 +111,10 @@ class MetricsManager:
 		self.gauges[metric.key] = Gauge(metric.key, "Value of the " + metric.key + " reading", metric.labels.keys())
 		logging.debug(f"Created gauge {metric.get_name()}")
 
-	def is_outlier(self, metric: Metric):
-		filter_info = self.outlier_filters.get(metric.key)
+	def is_filtered(self, metric: Metric):
+		filter_info = self.filters.get(metric.key)
 		if filter_info is None:
-			# No filter defined, not an outlier
+			# No filter defined
 			return False
 
 		gauge = self.gauges.get(metric.key)
@@ -131,22 +131,22 @@ class MetricsManager:
 
 			if rule_type == "diff":
 				if abs(metric.value - previous_value) > rule_value:
-					outlier_message = f"{metric.value} differs from previous value {previous_value} by more than {rule_value}."
+					filter_message = f"{metric.value} differs from previous value {previous_value} by more than {rule_value}."
 					break
 
 			elif rule_type == "above":
 				if metric.value > rule_value:
-					outlier_message = f"{metric.value} is above {rule_value}."
+					filter_message = f"{metric.value} is above {rule_value}."
 					break
 
 			elif rule_type == "below":
 				if metric.value < rule_value:
-					outlier_message = f"{metric.value} is below {rule_value}."
+					filter_message = f"{metric.value} is below {rule_value}."
 					break
 
 			elif rule_type == "value":
 				if math.isclose(metric.value, rule_value):
-					outlier_message = f"{metric.value} is a forbidden value."
+					filter_message = f"{metric.value} is a forbidden value."
 					break
 
 			else:
@@ -156,7 +156,7 @@ class MetricsManager:
 			# No filter was hit
 			if filter_info["already_dropped_values"] != 0:
 				filter_info["already_dropped_values"] = 0
-				logging.info(f"No outlier filter hit for {metric}, reset drop counter.")
+				logging.info(f"No filter hit for {metric}, reset drop counter.")
 			return False
 
 		filter_info["already_dropped_values"] += 1
@@ -165,14 +165,14 @@ class MetricsManager:
 			# Always accept when the maximum dropped values are reached
 			filter_info["already_dropped_values"] = 0
 			logging.warning(
-				f"Accepted detected outlier {metric} because maximum drops are reached."
-				f" Drop reason would have been '{outlier_message}'."
+				f"Accepted filtered value {metric} because maximum drops are reached."
+				f" Drop reason would have been '{filter_message}'."
 			)
 			return False
 
 		logging.warning(
-			f"[{filter_info['already_dropped_values']}/{filter_info['max_dropped_values']}] Filtered outlier {metric}:"
-			f" {outlier_message}"
+			f"[{filter_info['already_dropped_values']}/{filter_info['max_dropped_values']}] Filtered {metric}:"
+			f" {filter_message}"
 		)
 		return True
 

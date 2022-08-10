@@ -1,0 +1,29 @@
+{
+  "mqtt": {
+    "host": "localhost",
+    "port": 1338,
+    "tls": true,
+    "user": "username",
+    "password": "password"
+  },
+  "prometheus_exporter": {
+	"bind_ip": "::1",
+	"port": 9337,
+    "filters": [
+      {
+        "metric_names": [
+          "tasmota_power"
+        ],
+        "rules": ["value:100","diff:10"],
+        "max_dropped_values": 5
+      },
+      {
+        "metric_names": [
+          "tasmota_signal"
+        ],
+        "rules": ["above:10", "below:-100"],
+        "max_dropped_values": 3
+      }
+    ]
+  }
+}
