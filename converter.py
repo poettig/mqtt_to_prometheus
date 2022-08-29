@@ -15,18 +15,15 @@ from prometheus_client import Counter, Gauge, start_http_server
 
 # https://stackoverflow.com/a/1176023/6371499
 class CamelToSnakeConverter:
-	def __init__(self):
-		self.any_char_followed_by_uppercase_letter_pattern = re.compile(r"([^_])([A-Z][a-z]+)")
-		self.lower_or_number_followed_by_uppercase_letter_pattern = re.compile(r"([a-z0-9])([A-Z])")
+	any_char_followed_by_uppercase_letter_pattern = re.compile(r"([^_])([A-Z][a-z]+)")
+	lower_or_number_followed_by_uppercase_letter_pattern = re.compile(r"([a-z0-9])([A-Z])")
 
-	def convert(self, string: str):
+	@staticmethod
+	def convert(string: str):
 		result = re.sub("-", "_", string)
-		result = self.any_char_followed_by_uppercase_letter_pattern.sub(r"\1_\2", result)
-		result = self.lower_or_number_followed_by_uppercase_letter_pattern.sub(r"\1_\2", result)
+		result = CamelToSnakeConverter.any_char_followed_by_uppercase_letter_pattern.sub(r"\1_\2", result)
+		result = CamelToSnakeConverter.lower_or_number_followed_by_uppercase_letter_pattern.sub(r"\1_\2", result)
 		return result.lower()
-
-
-camel_to_snake_converter = CamelToSnakeConverter()
 
 
 class Metric:
@@ -99,7 +96,7 @@ class MetricsManager:
 		self.message_counter.labels(*(list(labels.values()))).inc()
 
 		for key, value in self.extract_metrics(data):
-			prefixed_key = f"tasmota_{camel_to_snake_converter.convert(key)}"
+			prefixed_key = f"tasmota_{CamelToSnakeConverter.convert(key)}"
 			metric = Metric(prefixed_key, value, labels)
 
 			if self.is_filtered(metric):
