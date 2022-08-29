@@ -20,7 +20,8 @@ class CamelToSnakeConverter:
 		self.lower_or_number_followed_by_uppercase_letter_pattern = re.compile(r"([a-z0-9])([A-Z])")
 
 	def convert(self, string: str):
-		result = self.any_char_followed_by_uppercase_letter_pattern.sub(r"\1_\2", string)
+		result = re.sub("-", "_", string)
+		result = self.any_char_followed_by_uppercase_letter_pattern.sub(r"\1_\2", result)
 		result = self.lower_or_number_followed_by_uppercase_letter_pattern.sub(r"\1_\2", result)
 		return result.lower()
 
