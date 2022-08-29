@@ -16,7 +16,7 @@ from prometheus_client import Counter, Gauge, start_http_server
 # https://stackoverflow.com/a/1176023/6371499
 class CamelToSnakeConverter:
 	def __init__(self):
-		self.any_char_followed_by_uppercase_letter_pattern = re.compile(r"(.)([A-Z][a-z]+)")
+		self.any_char_followed_by_uppercase_letter_pattern = re.compile(r"([^_])([A-Z][a-z]+)")
 		self.lower_or_number_followed_by_uppercase_letter_pattern = re.compile(r"([a-z0-9])([A-Z])")
 
 	def convert(self, string: str):
