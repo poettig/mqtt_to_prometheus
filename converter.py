@@ -58,7 +58,7 @@ class MetricsManager:
 
 		start_http_server(config["port"], config["bind_ip"])
 
-	def extract_metrics(self, data):
+	def extract_metrics(self, data, prefix=None):
 		if isinstance(data, list):
 			# Extract metrics for each list entry
 			for entry in data:
@@ -67,11 +67,15 @@ class MetricsManager:
 			# Iterate whole dict
 			for key, value in data.items():
 				if isinstance(value, list) or isinstance(value, dict):
-					yield from self.extract_metrics(value)
+					yield from self.extract_metrics(value, prefix=key)
 				else:
 					# Create gauge if value is numeric
 					if isinstance(value, int) or isinstance(value, float):
-						yield key, value
+						full_key = key
+						if prefix:
+							full_key = f"{prefix}_{key}"
+
+						yield full_key, value
 
 	def process_metrics(self, data: dict, labels):
 		# Check if the label keys match the stored ones. If none are stored, initialize it and the counter
