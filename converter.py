@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import json
 import logging
 import math
@@ -217,7 +218,12 @@ class MQTTManager:
 
 	def on_message(self, _, __, msg):
 		topic = msg.topic
-		payload = msg.payload.decode()
+
+		try:
+			payload = msg.payload.decode()
+		except UnicodeDecodeError as decode_error:
+			logging.error(f"Could not decode message bytes '{base64.encodebytes(msg.payload)}' payload: {decode_error}")
+			return
 
 		logging.debug(f"Received message {topic} {payload}")
 
