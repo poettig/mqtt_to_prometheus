@@ -9,6 +9,10 @@
   "prometheus_exporter": {
 	"bind_ip": "::1",
 	"port": 9337,
+    "cleanup": {
+      "interval": 10,
+      "threshold": 300
+    },
     "filters": [
       {
         "metric_names": [
