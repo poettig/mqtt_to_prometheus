@@ -117,12 +117,13 @@ class MetricsManager(ThreadedManager):
 
 						yield full_key, value
 
-	def create_gauge(self, metric: Metric):
-		self.gauges[metric.key] = GaugeContainer(metric.key, "Value of the " + metric.key + " reading", metric.labels.keys())
-		logging.debug(f"Created gauge {metric.get_name()}")
+	def set_gauge(self, metric: Metric):
+		if metric.key not in self.gauges:
+			self.gauges[metric.key] = GaugeContainer(metric.key, f"Value of the {metric.key} reading", metric.labels.keys())
+			logging.debug(f"Created gauge {metric.get_name()}")
 
-	def set_gauge_value(self, metric: Metric):
 		self.gauges[metric.key].labels(*metric.labels.values()).set(metric.value)
+		logging.debug(f"Set value of {metric.get_name()} to {metric.value}")
 
 	def is_filtered(self, metric: Metric):
 		filter_info = self.filters.get(metric.key)
@@ -220,13 +221,7 @@ class MetricsManager(ThreadedManager):
 				self.drop_counter.labels(*(list(labels.values()))).inc()
 				continue
 
-			if prefixed_key not in self.gauges:
-				self.create_gauge(metric)
-
-			self.set_gauge_value(metric)
-
-			if logging.root.level == logging.DEBUG:
-				logging.debug(f"Set value of {metric.get_name()} to {metric.value}")
+			self.set_gauge(metric)
 
 	def cleanup_metrics_forever(self):
 		interval_start = 0
@@ -238,7 +233,6 @@ class MetricsManager(ThreadedManager):
 
 			logging.debug("Running metrics cleanup...")
 			for key, gauge in self.gauges.items():
-
 				# Only identify entries to delete.
 				# Otherwise, deletion of the last_set entry will cause a "dict size change during iteration" error.
 				to_delete = []
