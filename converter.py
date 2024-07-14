@@ -20,6 +20,12 @@ json_data_type = dict[str, typing.Any] | list[dict[str, typing.Any] | str]
 labels_dict_type = dict[str, str]
 
 
+# This is not really an error, just a way to ask the main thread to exit the program.
+class ExitRequestError(Exception):
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        super().__init__(args, kwargs)
+
+
 # https://stackoverflow.com/a/1176023/6371499
 class CamelToSnakeConverter:
     any_char_followed_by_uppercase_letter_pattern = re.compile(r"([^_])([A-Z][a-z]+)")
@@ -223,7 +229,7 @@ class MetricsManager(ThreadedManager):
             logging.error(
                 f"Label keys [{','.join(labels.keys())}] do not match the keys stored from the first message."
             )
-            exithandler()
+            raise ExitRequestError()
 
         self.message_counter.labels(*(list(labels.values()))).inc()
 
@@ -298,12 +304,12 @@ class MQTTManager(ThreadedManager):
 
     def connect_and_loop(self) -> None:
         self.mqtt_client.connect(self.host, self.port, 60)
-        self.mqtt_client.loop_start()
+        self.mqtt_client.loop()
 
         while self.running:
-            time.sleep(0.1)
+            self.mqtt_client.loop()
 
-        self.mqtt_client.loop_stop()
+        self.mqtt_client.disconnect()
 
     @staticmethod
     def on_connect(client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties | None, ___: None) -> None:
@@ -312,7 +318,7 @@ class MQTTManager(ThreadedManager):
             client.subscribe("tele/#")
         else:
             logging.error(f"Connected to MQTT broker with return code {reason_code}")
-            exithandler()
+            raise ExitRequestError()
 
     @staticmethod
     def on_log(_: mqtt.Client, level: int, buf: str) -> None:
@@ -344,11 +350,11 @@ class MQTTManager(ThreadedManager):
         if len(topic_elems) % 2 != 0:
             logging.error("Inner topic parts are not an even number of elements. Fix pls!")
             logging.error(f"{topic_elems}")
-            exithandler()
-        else:
-            it = iter(topic_elems)
-            for key in it:
-                labels[key] = next(it)
+            raise ExitRequestError()
+
+        it = iter(topic_elems)
+        for key in it:
+            labels[key] = next(it)
 
         # Check if the last part of the topic is one of the relevant message types
         if name not in MQTTManager.relevant_message_types:
@@ -456,15 +462,17 @@ def main() -> None:
     for manager in managers:
         manager.start_threaded_work()
 
-    # Check for exceptions periodically
+    # Check for exit requests and exceptions periodically
     while True:
         for manager in managers:
             if manager.exception:
-                logging.critical(
-                    f"Uncaught exception occured in thread {manager.thread.name}: "
-                    f"{type(manager.exception).__name__} - {manager.exception}"
-                )
-                logging.debug(f"Stacktrace:\n{''.join(traceback.format_tb(manager.exception.__traceback__))}")
+                if not isinstance(manager.exception, ExitRequestError):
+                    logging.critical(
+                        f"Uncaught exception occured in thread {manager.thread.name}: "
+                        f"{type(manager.exception).__name__} - {manager.exception}"
+                    )
+                    logging.debug(f"Stacktrace:\n{''.join(traceback.format_tb(manager.exception.__traceback__))}")
+
                 exithandler()
 
         time.sleep(0.1)
