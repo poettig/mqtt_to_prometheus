@@ -285,7 +285,7 @@ class MQTTManager(ThreadedManager):
 
         self.metrics_manager = metrics_manager
 
-        self.mqtt_client = mqtt.Client()
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
         self.mqtt_client.on_log = self.on_log
@@ -306,12 +306,12 @@ class MQTTManager(ThreadedManager):
         self.mqtt_client.loop_stop()
 
     @staticmethod
-    def on_connect(client: mqtt.Client, _: None, __: None, rc: mqtt.Properties | None) -> None:
-        if rc == 0:
+    def on_connect(client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties | None, ___: None) -> None:
+        if reason_code == 0:
             logging.info("Connected to MQTT broker")
             client.subscribe("tele/#")
         else:
-            logging.error(f"Connected to MQTT broker with return code {rc}")
+            logging.error(f"Connected to MQTT broker with return code {reason_code}")
             exithandler()
 
     @staticmethod
