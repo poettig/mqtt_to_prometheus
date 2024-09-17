@@ -218,18 +218,19 @@ class Metric(abc.ABC):
         self.last_set = time.time()
         logging.debug(f"Set {self.full_name} to {self.value}")
 
-    def remove(self) -> None:
+    def remove(self) -> bool:
         if self.last_set == 0:
             # Currently not set, removing makes no sense
             logging.debug(f"Tried to remove {self.full_name} but it is currently not set")
-            return
+            return False
 
         with self._lock:
             self._counter_or_gauge.remove(*self._labels.values())
 
         self.last_set = 0
-
         logging.debug(f"Removed {self.full_name}")
+
+        return True
 
 
 class TasmotaMetric(Metric):
@@ -450,8 +451,10 @@ class MetricsManager(ThreadedManager, abc.ABC):
 
         for metric in self._metrics.values():
             if time.time() - metric.last_set > self._cleanup_threshold:
-                metric.remove()
-                logging.info(f"Removed metric {metric.full_name} as it was inactive for {self._cleanup_threshold}s.")
+                if metric.remove():
+                    logging.info(
+                        f"Removed metric {metric.full_name} as it was inactive for {self._cleanup_threshold}s."
+                    )
 
 
 class TasmotaMetricsManager(MetricsManager):
