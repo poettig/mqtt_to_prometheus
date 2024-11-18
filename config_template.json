@@ -17,6 +17,10 @@
       "shelly": {
         "interval": 60,
         "threshold": 10000
+      },
+      "noprefixraw": {
+        "interval": 60,
+        "threshold": 4000
       }
     },
     "filters": [

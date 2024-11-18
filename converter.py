@@ -22,7 +22,7 @@ prometheus_client.REGISTRY.unregister(prometheus_client.PROCESS_COLLECTOR)
 prometheus_client.REGISTRY.unregister(prometheus_client.PLATFORM_COLLECTOR)
 prometheus_client.REGISTRY.unregister(prometheus_client.GC_COLLECTOR)
 
-json_data_type = dict[str, typing.Any] | list[dict[str, typing.Any] | str]
+json_data_type = dict[str, typing.Any] | list[dict[str, typing.Any] | str] | str
 labels_dict_type = dict[str, str]
 
 
@@ -245,6 +245,12 @@ class ShellyMetric(Metric):
         return "shelly_"
 
 
+class NoPrefixMetric(Metric):
+    @property
+    def _prefix(self) -> str:
+        return ""
+
+
 class MetricsManager(ThreadedManager, abc.ABC):
     def __init__(
         self,
@@ -450,15 +456,12 @@ class MetricsManager(ThreadedManager, abc.ABC):
         logging.debug("Running metrics cleanup...")
 
         for metric in self._metrics.values():
-            if time.time() - metric.last_set > self._cleanup_threshold:
-                if metric.remove():
-                    logging.info(
-                        f"Removed metric {metric.full_name} as it was inactive for {self._cleanup_threshold}s."
-                    )
+            if time.time() - metric.last_set > self._cleanup_threshold and metric.remove():
+                logging.info(f"Removed metric {metric.full_name} as it was inactive for {self._cleanup_threshold}s.")
 
 
 class TasmotaMetricsManager(MetricsManager):
-    message_types = (
+    message_types_to_parse = (
         "STATE",
         "SENSOR",
     )
@@ -466,7 +469,7 @@ class TasmotaMetricsManager(MetricsManager):
     @staticmethod
     def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
         topic_elements = topic.split("/")
-        if topic_elements[-1] not in TasmotaMetricsManager.message_types:
+        if topic_elements[-1] not in TasmotaMetricsManager.message_types_to_parse:
             return None
 
         metric_labels_data = topic_elements[:-1]
@@ -482,7 +485,7 @@ class TasmotaMetricsManager(MetricsManager):
         return metric_labels, ""
 
     @staticmethod
-    def _extract_metrics(remaining_topic: str, json_data: json_data_type) -> list[tuple[str, float]] | None:
+    def _extract_metrics(_: str, json_data: json_data_type) -> list[tuple[str, float]] | None:
         return list(MetricsManager._recursive_metrics_generator(json_data))
 
     @property
@@ -555,6 +558,35 @@ class ShellyMetricsManager(MetricsManager):
     @property
     def mqtt_subscribe_prefix(self) -> str:
         return "shelly"
+
+
+class NoPrefixRawValuesManager(MetricsManager):
+    @property
+    def _metric_type(self) -> type[Metric]:
+        return NoPrefixMetric
+
+    @property
+    def mqtt_subscribe_prefix(self) -> str:
+        return "noprefixraw"
+
+    @staticmethod
+    def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
+        topic_elements = topic.split("/")
+        if len(topic_elements) % 2 == 0:
+            raise ValueError(f"Topic leaves no metric name at the end: {topic_elements}")
+
+        # Split labels data into keys and values
+        metric_labels_data = topic_elements[:-1]
+        metric_labels = {}
+        metric_labels_data_iterator = iter(metric_labels_data)
+        for key in metric_labels_data_iterator:
+            metric_labels[key] = next(metric_labels_data_iterator)
+
+        return metric_labels, topic_elements[-1]
+
+    @staticmethod
+    def _extract_metrics(remaining_topic: str, json_data: json_data_type) -> list[tuple[str, float]] | None:
+        return [(remaining_topic, float(json_data))]
 
 
 class MQTTManager(ThreadedManager):
@@ -700,6 +732,11 @@ def main() -> None:
             exporter_config["filters"],
             exporter_config["cleanup"]["shelly"]["interval"],
             exporter_config["cleanup"]["shelly"]["threshold"],
+        ),
+        NoPrefixRawValuesManager(
+            exporter_config["filters"],
+            exporter_config["cleanup"]["noprefixraw"]["interval"],
+            exporter_config["cleanup"]["noprefixraw"]["threshold"],
         ),
     ]
     managers.extend(metrics_managers)
