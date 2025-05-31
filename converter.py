@@ -621,6 +621,7 @@ class MQTTManager(ThreadedManager):
         self._mqtt_client.connect(self._host, self._port, 60)
 
     def run_iteration(self) -> None:
+        self._mqtt_client.loop_misc()
         self._mqtt_client.loop_read()
         if self._mqtt_client.want_write():
             self._mqtt_client.loop_write()
