@@ -389,7 +389,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
             # Always accept when the maximum dropped values are reached
             filter_info["already_dropped_values"] = 0
             logging.warning(
-                f"Accepted filtered value {metric} because maximum drops are reached." f" Drop reasons would have been:"
+                f"Accepted filtered value {metric} because maximum drops are reached. Drop reasons would have been:"
             )
             for filter_message in filter_messages:
                 logging.warning(filter_message)
@@ -605,6 +605,7 @@ class MQTTManager(ThreadedManager):
 
         self._mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self._mqtt_client.on_connect = lambda *args, **kwargs: self.on_connect(*args, **kwargs)
+        self._mqtt_client.on_disconnect = lambda *args, **kwargs: self.on_disconnect(*args, **kwargs)
         self._mqtt_client.on_message = self.on_message
         self._mqtt_client.on_log = self.on_log
         self._mqtt_client.username_pw_set(user, password)
@@ -620,25 +621,29 @@ class MQTTManager(ThreadedManager):
         self._mqtt_client.connect(self._host, self._port, 60)
 
     def run_iteration(self) -> None:
-        self._mqtt_client.loop()
+        self._mqtt_client.loop_read()
+        if self._mqtt_client.want_write():
+            self._mqtt_client.loop_write()
 
     def teardown(self) -> None:
         self._mqtt_client.disconnect()
 
     def on_connect(
-        self,
-        client: mqtt.Client,
-        _: None,
-        __: None,
-        reason_code: mqtt.Properties | None,
-        ___: None,
+        self, client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties | None, ___: None
     ) -> None:
         if reason_code == 0:
             logging.info("Connected to MQTT broker")
             for metrics_manager in self._metrics_managers.values():
                 client.subscribe(metrics_manager.mqtt_subscribe_prefix + "/#")
         else:
-            raise Exception(f"Connected to MQTT broker with return code {reason_code}")
+            raise Exception(f"Connected to MQTT broker with reason code '{reason_code}'")
+
+    @staticmethod
+    def on_disconnect(client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties, ___: None) -> None:
+        logging.warning(f"Disconnected from MQTT broker, reason code '{reason_code}', trying to reconnect")
+
+        # Try to reconnect
+        client.reconnect()
 
     @staticmethod
     def on_log(_: mqtt.Client, level: int, buf: str) -> None:
