@@ -312,25 +312,47 @@ class MetricsManager(ThreadedManager, abc.ABC):
         """
         raise NotImplementedError
 
+
     @staticmethod
-    def _recursive_metrics_generator(json_data: json_data_type, prefix: str | None = None) -> list[tuple[str, float]]:
+    def _create_metric_with_value(metric_prefix: str, metric_name: str, value: int | float) -> tuple[str, int | float]:
+        full_metric_name = metric_name
+        if metric_prefix:
+            full_metric_name = f"{metric_prefix}_{metric_name}"
+
+        return full_metric_name, value
+
+    @staticmethod
+    def _recursive_metrics_generator(json_data: json_data_type, prefix: str | None = None) -> typing.Generator[tuple[str, int | float]]:
         if isinstance(json_data, list):
             # Extract metrics for each list entry
             for entry in json_data:
-                yield from TasmotaMetricsManager._recursive_metrics_generator(entry)
+                yield from MetricsManager._recursive_metrics_generator(entry)
+
         elif isinstance(json_data, dict):
             # Iterate whole dict
             for key, value in json_data.items():
-                if isinstance(value, list | dict):
-                    yield from TasmotaMetricsManager._recursive_metrics_generator(value, prefix=key)
-                else:
-                    # Generate metric if the value is a number
-                    if isinstance(value, int | float):
-                        metric_name = key
-                        if prefix:
-                            metric_name = f"{prefix}_{key}"
+                if isinstance(value, list):
+                    # Iterate list and check which value type it is
+                    for idx, entry in enumerate(value):
+                        if isinstance(entry, int | float):
+                            # For lists of numbers, add an identifier if there is more than one entry
+                            metric_name = key
+                            if len(value) > 1:
+                                metric_name = f"{key}{idx + 1}"
 
-                        yield metric_name, value
+                            yield MetricsManager._create_metric_with_value(prefix, metric_name, entry)
+
+                        elif isinstance(entry, dict):
+                            yield from MetricsManager._recursive_metrics_generator(entry, prefix=key)
+
+                        # Lists in lists are ignored
+
+                elif isinstance(value, list | dict):
+                    yield from MetricsManager._recursive_metrics_generator(value, prefix=key)
+
+                # Generate metric if the value is a number
+                elif isinstance(value, int | float):
+                    yield MetricsManager._create_metric_with_value(prefix, key, value)
 
     def get_metric(self, name: str, labels: labels_dict_type) -> Metric:
         # A specific metric is identified by its name and labels
