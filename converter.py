@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 import typing
+from collections.abc import Generator
 
 import paho.mqtt.client as mqtt
 import prometheus_client
@@ -322,7 +323,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
         return full_metric_name, value
 
     @staticmethod
-    def _recursive_metrics_generator(json_data: json_data_type, prefix: str | None = None) -> typing.Generator[tuple[str, int | float]]:
+    def _recursive_metrics_generator(json_data: json_data_type, prefix: str | None = None) -> Generator[tuple[str, int | float]]:
         if isinstance(json_data, list):
             # Extract metrics for each list entry
             for entry in json_data:
