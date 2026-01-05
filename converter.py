@@ -26,13 +26,15 @@ prometheus_client.REGISTRY.unregister(prometheus_client.GC_COLLECTOR)
 json_data_type = dict[str, typing.Any] | list[dict[str, typing.Any] | str] | str
 labels_dict_type = dict[str, str]
 
+LOGGING_LEVEL_TRACE = 9
 
-def setup_logging(quiet: bool, debug: bool, timestamps: bool) -> None:
+
+def setup_logging(quiet: bool, debug: bool, trace: bool, timestamps: bool) -> None:
     log_date_format = "%Y-%m-%d %H:%M:%S"
     log_format = "%(levelname)8s: %(message)s"
 
-    if debug:
-        log_level = logging.DEBUG
+    if debug or trace:
+        log_level = LOGGING_LEVEL_TRACE if trace else logging.DEBUG
         log_format = "[%(name)s] " + log_format
     elif quiet:
         log_level = logging.WARNING
@@ -42,6 +44,7 @@ def setup_logging(quiet: bool, debug: bool, timestamps: bool) -> None:
     if timestamps:
         log_format = "[%(asctime)s] " + log_format
 
+    logging.addLevelName(LOGGING_LEVEL_TRACE, "TRACE")
     logging.basicConfig(level=log_level, format=log_format, datefmt=log_date_format)
 
 
@@ -81,7 +84,7 @@ class ThreadedManager(abc.ABC):
                 time.sleep(self._interval)
 
             try:
-                logging.debug(f"Run iteration loop of thread {self._thread.name}")
+                logging.log(LOGGING_LEVEL_TRACE, f"Run iteration loop of thread {self._thread.name}")
                 self.run_iteration()
             except BaseException as e:
                 self.exception = e
@@ -313,9 +316,8 @@ class MetricsManager(ThreadedManager, abc.ABC):
         """
         raise NotImplementedError
 
-
     @staticmethod
-    def _create_metric_with_value(metric_prefix: str, metric_name: str, value: int | float) -> tuple[str, int | float]:
+    def _create_metric_with_value(metric_prefix: str, metric_name: str, value: float) -> tuple[str, int | float]:
         full_metric_name = metric_name
         if metric_prefix:
             full_metric_name = f"{metric_prefix}_{metric_name}"
@@ -323,7 +325,9 @@ class MetricsManager(ThreadedManager, abc.ABC):
         return full_metric_name, value
 
     @staticmethod
-    def _recursive_metrics_generator(json_data: json_data_type, prefix: str | None = None) -> Generator[tuple[str, int | float]]:
+    def _recursive_metrics_generator(
+        json_data: json_data_type, prefix: str | None = None
+    ) -> Generator[tuple[str, float]]:
         if isinstance(json_data, list):
             # Extract metrics for each list entry
             for entry in json_data:
@@ -474,6 +478,9 @@ class MetricsManager(ThreadedManager, abc.ABC):
                 self._drop_counter.inc()
             else:
                 metric.set(value)
+
+        # Update "last received" metric for topic which also is never filtered
+        self.get_metric("last_update", {**labels, "topic": remaining_topic}).set(time.time())
 
     def run_iteration(self) -> None:
         logging.debug("Running metrics cleanup...")
@@ -729,10 +736,11 @@ def main() -> None:
     log_level_group = parser.add_mutually_exclusive_group()
     log_level_group.add_argument("--quiet", "-q", action="store_true", help="Only log warnings or higher.")
     log_level_group.add_argument("--debug", "-d", action="store_true", help="Show debug logs.")
+    log_level_group.add_argument("--trace", "-t", action="store_true", help="Show debug and trace logs.")
 
     args = parser.parse_args()
 
-    setup_logging(args.quiet, args.debug, not args.hide_timestamps)
+    setup_logging(args.quiet, args.debug, args.trace, not args.hide_timestamps)
 
     # Load config
     config_path = pathlib.Path(args.config)
