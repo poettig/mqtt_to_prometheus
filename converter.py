@@ -259,8 +259,8 @@ class MetricsManager(ThreadedManager, abc.ABC):
         cleanup_interval: int,
         cleanup_threshold: int,
     ) -> None:
-        self._message_counter = None
-        self._drop_counter = None
+        self._message_counter: Metric | None = None
+        self._drop_counter: Metric | None = None
         self._metrics: dict[str, Metric] = {}
         self._labels = None
         self._filters = {}
@@ -448,7 +448,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
             self._message_counter = self._metric_type(
                 "processed_messages",
                 labels,
-                documentation="MQTT messages processed for this topic",
+                documentation="MQTT messages processed for this topic.",
                 is_counter=True,
             )
             self._drop_counter = self._metric_type(
@@ -505,7 +505,7 @@ class TasmotaMetricsManager(MetricsManager):
         for key in metric_labels_data_iterator:
             metric_labels[key] = next(metric_labels_data_iterator)
 
-        return metric_labels, ""
+        return metric_labels, topic_elements[-1]
 
     @staticmethod
     def _extract_metrics(_: str, json_data: json_data_type) -> list[tuple[str, float]] | None:
@@ -538,7 +538,6 @@ class ShellyMetricsManager(MetricsManager):
 
         # Split labels data into keys and values
         metric_labels = {}
-        remaining_topic = ""
         metric_labels_data_iterator = iter(topic_elements)
         for key in metric_labels_data_iterator:
             if key == found_message_type:
