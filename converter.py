@@ -29,6 +29,8 @@ labels_dict_type = dict[str, str]
 
 LOGGING_LEVEL_TRACE = 9
 
+should_exit = False
+
 
 def setup_logging(quiet: bool, debug: bool, trace: bool, timestamps: bool) -> None:
     log_date_format = "%Y-%m-%d %H:%M:%S"
@@ -684,6 +686,10 @@ class MQTTManager(ThreadedManager):
 
     @staticmethod
     def on_disconnect(client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties, ___: None) -> None:
+        if should_exit:
+            # Don't do anything if program should exit
+            return
+
         logging.warning(f"Disconnected from MQTT broker, reason code '{reason_code}', trying to reconnect...")
 
         # Try to reconnect a few times before giving up
@@ -733,6 +739,8 @@ def main() -> None:
     managers = []
 
     def exit_handler(signum: int = -1, _: types.FrameType | None = None) -> None:
+        global should_exit
+        should_exit = True
         exit_code = 0
         if signum == signal.SIGINT:
             logging.info("SIGINT received, exiting...")
