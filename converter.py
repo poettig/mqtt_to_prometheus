@@ -443,7 +443,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
 
         return True
 
-    def process_mqtt_message(self, topic: str, json_data: json_data_type) -> None:
+    def process_mqtt_message(self, topic: str, json_data: Json) -> None:
         # Extract labelset from topic
         result = self._extract_labels(topic)
         if not result:
