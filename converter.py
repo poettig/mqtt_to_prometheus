@@ -29,9 +29,6 @@ labels_dict_type = dict[str, str]
 
 LOGGING_LEVEL_TRACE = 9
 
-should_exit = False
-
-
 def setup_logging(quiet: bool, debug: bool, trace: bool, timestamps: bool) -> None:
     log_date_format = "%Y-%m-%d %H:%M:%S"
     log_format = "%(levelname)8s: %(message)s"
@@ -649,8 +646,8 @@ class MQTTManager(ThreadedManager):
             self._metrics_managers[metrics_manager.mqtt_subscribe_prefix] = metrics_manager
 
         self._mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        self._mqtt_client.on_connect = lambda *args, **kwargs: self.on_connect(*args, **kwargs)
-        self._mqtt_client.on_disconnect = lambda *args, **kwargs: self.on_disconnect(*args, **kwargs)
+        self._mqtt_client.on_connect = self.on_connect
+        self._mqtt_client.on_disconnect = self.on_disconnect
         self._mqtt_client.on_message = self.on_message
         self._mqtt_client.on_log = self.on_log
         self._mqtt_client.username_pw_set(user, password)
@@ -675,7 +672,7 @@ class MQTTManager(ThreadedManager):
         self._mqtt_client.disconnect()
 
     def on_connect(
-        self, client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties | None, ___: None
+        self, client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties | None, ___: None,
     ) -> None:
         if reason_code == 0:
             logging.info("Connected to MQTT broker")
@@ -684,9 +681,8 @@ class MQTTManager(ThreadedManager):
         else:
             raise Exception(f"Connected to MQTT broker with reason code '{reason_code}'")
 
-    @staticmethod
-    def on_disconnect(client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties, ___: None) -> None:
-        if should_exit:
+    def on_disconnect(self, client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties, ___: None) -> None:
+        if not self._running:
             # Don't do anything if program should exit
             return
 
