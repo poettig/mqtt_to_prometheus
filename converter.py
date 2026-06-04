@@ -19,12 +19,12 @@ from collections.abc import Generator
 import paho.mqtt.client as mqtt
 import prometheus_client
 from prometheus_client import Counter, Gauge
+from pydantic import Json
 
 prometheus_client.REGISTRY.unregister(prometheus_client.PROCESS_COLLECTOR)
 prometheus_client.REGISTRY.unregister(prometheus_client.PLATFORM_COLLECTOR)
 prometheus_client.REGISTRY.unregister(prometheus_client.GC_COLLECTOR)
 
-json_data_type = dict[str, typing.Any] | list[dict[str, typing.Any] | str] | str
 labels_dict_type = dict[str, str]
 
 LOGGING_LEVEL_TRACE = 9
@@ -312,7 +312,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
 
     @staticmethod
     @abc.abstractmethod
-    def _extract_metrics(remaining_topic: str, json_data: json_data_type) -> list[tuple[str, float]]:
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]]:
         """
         Extracts metrics data from the remaining topic after parsing labels and the JSON data of the message.
 
@@ -337,7 +337,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
 
     @staticmethod
     def _recursive_metrics_generator(
-        json_data: json_data_type, prefix: str | None = None
+        json_data: Json, prefix: str | None = None
     ) -> Generator[tuple[str, float]]:
         if isinstance(json_data, list):
             # Extract metrics for each list entry
@@ -526,7 +526,7 @@ class TasmotaMetricsManager(MetricsManager):
         return metric_labels, topic_elements[-1]
 
     @staticmethod
-    def _extract_metrics(_: str, json_data: json_data_type) -> list[tuple[str, float]] | None:
+    def _extract_metrics(_: str, json_data: Json) -> list[tuple[str, float]] | None:
         return list(MetricsManager._recursive_metrics_generator(json_data))
 
     @property
@@ -574,7 +574,7 @@ class ShellyMetricsManager(MetricsManager):
         return metric_labels, "/".join(metric_labels_data_iterator)
 
     @staticmethod
-    def _extract_metrics(remaining_topic: str, json_data: json_data_type) -> list[tuple[str, float]] | None:
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]] | None:
         result = []
         for metric_name, value in MetricsManager._recursive_metrics_generator(json_data):
             metric_name_prefix = None
@@ -625,9 +625,9 @@ class NoPrefixRawValuesManager(MetricsManager):
         return metric_labels, topic_elements[-1]
 
     @staticmethod
-    def _extract_metrics(remaining_topic: str, json_data: json_data_type) -> list[tuple[str, float]] | None:
-        if not isinstance(json_data, str):
-            raise ValueError("Can't extract metric with non-float input")
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]] | None:
+        if not isinstance(json_data, str | float | int):
+            raise ValueError(f"Can't extract metric with non-float input {type(json_data)}")
 
         return [(remaining_topic, float(json_data))]
 
