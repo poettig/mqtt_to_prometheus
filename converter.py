@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import traceback
+import types
 import typing
 from collections.abc import Generator
 
@@ -167,7 +168,13 @@ class Metric(abc.ABC):
 
     @property
     def _counter_or_gauge(self) -> Counter | Gauge:
-        return self._counter if self._counter is not None else self._gauge
+        if self._counter:
+            return self._counter
+
+        if self._gauge:
+            return self._gauge
+
+        raise ValueError("Metric is neither a counter nor a Gauge")
 
     @property
     def _metric(self) -> Counter | Gauge:
@@ -203,7 +210,7 @@ class Metric(abc.ABC):
         logging.debug(f"Increased {self.full_name} by {amount} to {self.value}")
 
     def dec(self, amount: float = 1.0) -> None:
-        if self._gauge is None:
+        if isinstance(self._metric, Counter):
             raise ValueError(f"Tried to decrease counter metric {self.full_name}")
 
         with self._lock:
@@ -317,7 +324,11 @@ class MetricsManager(ThreadedManager, abc.ABC):
         raise NotImplementedError
 
     @staticmethod
-    def _create_metric_with_value(metric_prefix: str, metric_name: str, value: float) -> tuple[str, int | float]:
+    def _create_metric_with_value(
+        metric_name: str,
+        value: float,
+        metric_prefix: str | None = None,
+    ) -> tuple[str, int | float]:
         full_metric_name = metric_name
         if metric_prefix:
             full_metric_name = f"{metric_prefix}_{metric_name}"
@@ -345,7 +356,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
                             if len(value) > 1:
                                 metric_name = f"{key}{idx + 1}"
 
-                            yield MetricsManager._create_metric_with_value(prefix, metric_name, entry)
+                            yield MetricsManager._create_metric_with_value(metric_name, entry, prefix)
 
                         elif isinstance(entry, dict):
                             yield from MetricsManager._recursive_metrics_generator(entry, prefix=key)
@@ -357,7 +368,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
 
                 # Generate metric if the value is a number
                 elif isinstance(value, int | float):
-                    yield MetricsManager._create_metric_with_value(prefix, key, value)
+                    yield MetricsManager._create_metric_with_value(key, value, prefix)
 
     def get_metric(self, name: str, labels: labels_dict_type) -> Metric:
         # A specific metric is identified by its name and labels
@@ -615,6 +626,9 @@ class NoPrefixRawValuesManager(MetricsManager):
 
     @staticmethod
     def _extract_metrics(remaining_topic: str, json_data: json_data_type) -> list[tuple[str, float]] | None:
+        if not isinstance(json_data, str):
+            raise ValueError("Can't extract metric with non-float input")
+
         return [(remaining_topic, float(json_data))]
 
 
@@ -670,10 +684,20 @@ class MQTTManager(ThreadedManager):
 
     @staticmethod
     def on_disconnect(client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties, ___: None) -> None:
-        logging.warning(f"Disconnected from MQTT broker, reason code '{reason_code}', trying to reconnect")
+        logging.warning(f"Disconnected from MQTT broker, reason code '{reason_code}', trying to reconnect...")
 
-        # Try to reconnect
-        client.reconnect()
+        # Try to reconnect a few times before giving up
+        retry = 0
+        while True:
+            try:
+                client.reconnect()
+            except (ConnectionRefusedError, TimeoutError) as e:
+                if retry > 5:
+                    raise e
+
+                logging.warning(f"Failed to reconnect to MQTT broker, trying to reconnect in {2**retry} seconds...")
+                time.sleep(2**retry)
+                retry += 1
 
     @staticmethod
     def on_log(_: mqtt.Client, level: int, buf: str) -> None:
@@ -708,7 +732,7 @@ class MQTTManager(ThreadedManager):
 def main() -> None:
     managers = []
 
-    def exit_handler(signum: int = -1, _: None = None) -> None:
+    def exit_handler(signum: int = -1, _: types.FrameType | None = None) -> None:
         exit_code = 0
         if signum == signal.SIGINT:
             logging.info("SIGINT received, exiting...")
@@ -804,7 +828,7 @@ def main() -> None:
         for manager in managers:
             if manager.exception:
                 logging.critical(
-                    f"Uncaught exception occurred in manager thread {manager.__class__.__name__} "
+                    f"Uncaught exception occurred in manager thread {manager.__class__.__name__}: "
                     f"{type(manager.exception).__name__} - {manager.exception}"
                 )
                 logging.debug(f"Stacktrace:\n{''.join(traceback.format_tb(manager.exception.__traceback__))}")
