@@ -693,6 +693,7 @@ class MQTTManager(ThreadedManager):
         while True:
             try:
                 client.reconnect()
+                break
             except (ConnectionRefusedError, TimeoutError) as e:
                 if retry > 5:
                     raise e
