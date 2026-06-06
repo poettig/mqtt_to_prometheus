@@ -15,6 +15,7 @@ import traceback
 import types
 import typing
 from collections.abc import Generator
+from typing import ClassVar
 
 import paho.mqtt.client as mqtt
 import prometheus_client
@@ -28,6 +29,7 @@ prometheus_client.REGISTRY.unregister(prometheus_client.GC_COLLECTOR)
 labels_dict_type = dict[str, str]
 
 LOGGING_LEVEL_TRACE = 9
+
 
 def setup_logging(quiet: bool, debug: bool, trace: bool, timestamps: bool) -> None:
     log_date_format = "%Y-%m-%d %H:%M:%S"
@@ -255,6 +257,12 @@ class ShellyMetric(Metric):
         return "shelly_"
 
 
+class FaikoutMetric(Metric):
+    @property
+    def _prefix(self) -> str:
+        return "faikout_"
+
+
 class NoPrefixMetric(Metric):
     @property
     def _prefix(self) -> str:
@@ -335,9 +343,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
         return full_metric_name, value
 
     @staticmethod
-    def _recursive_metrics_generator(
-        json_data: Json, prefix: str | None = None
-    ) -> Generator[tuple[str, float]]:
+    def _recursive_metrics_generator(json_data: Json, prefix: str | None = None) -> Generator[tuple[str, float]]:
         if isinstance(json_data, list):
             # Extract metrics for each list entry
             for entry in json_data:
@@ -599,6 +605,52 @@ class ShellyMetricsManager(MetricsManager):
         return "shelly"
 
 
+class FaikoutMetricsManager(MetricsManager):
+    message_types_to_parse = ("status",)
+    mode_mapping: ClassVar[dict[str, int]] = {"H": 1, "C": 2, "D": 3, "F": 4, "A": 5}
+    fan_mapping: ClassVar[dict[str, int]] = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "A": 6, "Q": 7}
+
+    def __init__(self, location: str, filters: dict, cleanup_interval: int, cleanup_threshold: int) -> None:
+        super().__init__(filters, cleanup_interval, cleanup_threshold)
+        self.location = location
+
+    def _extract_labels(self, topic: str) -> tuple[labels_dict_type, str] | None:
+        found_message_type = None
+        for message_type in ShellyMetricsManager.message_types_to_parse:
+            if f"/{message_type}" in topic:
+                found_message_type = message_type
+                break
+
+        if found_message_type is None:
+            return None
+
+        # Faikout does not allow custom topics, have to hardcode it
+        topic_elements = topic.split("/")
+        return {"location": self.location, "device": topic_elements[0]}, ""
+
+    @staticmethod
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]] | None:
+        # Convert mode and fan speed to a number
+        if json_data.get("mode"):
+            json_data["mode"] = FaikoutMetricsManager.mode_mapping[json_data["mode"]]
+        if json_data.get("fan"):
+            json_data["fan"] = FaikoutMetricsManager.fan_mapping[json_data["fan"]]
+
+        result = []
+        for metric_name, value in MetricsManager._recursive_metrics_generator(json_data):
+            result.append((metric_name, value))
+
+        return result
+
+    @property
+    def _metric_type(self) -> type[Metric]:
+        return FaikoutMetric
+
+    @property
+    def mqtt_subscribe_prefix(self) -> str:
+        return "Faikout"
+
+
 class NoPrefixRawValuesManager(MetricsManager):
     @property
     def _metric_type(self) -> type[Metric]:
@@ -672,7 +724,12 @@ class MQTTManager(ThreadedManager):
         self._mqtt_client.disconnect()
 
     def on_connect(
-        self, client: mqtt.Client, _: None, __: None, reason_code: mqtt.Properties | None, ___: None,
+        self,
+        client: mqtt.Client,
+        _: None,
+        __: None,
+        reason_code: mqtt.Properties | None,
+        ___: None,
     ) -> None:
         if reason_code == 0:
             logging.info("Connected to MQTT broker")
@@ -797,6 +854,12 @@ def main() -> None:
             exporter_config["filters"],
             exporter_config["cleanup"]["shelly"]["interval"],
             exporter_config["cleanup"]["shelly"]["threshold"],
+        ),
+        FaikoutMetricsManager(
+            exporter_config["faikout"]["location"],
+            exporter_config["filters"],
+            exporter_config["cleanup"]["faikout"]["interval"],
+            exporter_config["cleanup"]["faikout"]["threshold"],
         ),
         NoPrefixRawValuesManager(
             exporter_config["filters"],
