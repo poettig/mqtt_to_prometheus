@@ -15,7 +15,7 @@ import traceback
 import types
 import typing
 from collections.abc import Generator
-from typing import ClassVar
+from typing import ClassVar, Any
 
 import paho.mqtt.client as mqtt
 import prometheus_client
@@ -48,6 +48,18 @@ def setup_logging(quiet: bool, debug: bool, trace: bool, timestamps: bool) -> No
 
     logging.addLevelName(LOGGING_LEVEL_TRACE, "TRACE")
     logging.basicConfig(level=log_level, format=log_format, datefmt=log_date_format)
+
+
+def extract_labels_from_topic_segments(labels_data: list[str]) -> dict[Any, Any]:
+    if len(labels_data) % 2 != 0:
+        raise ValueError(f"Labels extracted from topic are not an even number of elements: {labels_data}")
+
+    # Split labels data into keys and values
+    labels = {}
+    labels_data_iterator = iter(labels_data)
+    for key in labels_data_iterator:
+        labels[key] = next(labels_data_iterator)
+    return labels
 
 
 # https://stackoverflow.com/a/1176023/6371499
@@ -261,6 +273,12 @@ class FaikoutMetric(Metric):
     @property
     def _prefix(self) -> str:
         return "faikout_"
+
+
+class Zigbee2MQTTMetric(Metric):
+    @property
+    def _prefix(self) -> str:
+        return "zigbee2mqtt_"
 
 
 class NoPrefixMetric(Metric):
@@ -518,16 +536,8 @@ class TasmotaMetricsManager(MetricsManager):
         if topic_elements[-1] not in TasmotaMetricsManager.message_types_to_parse:
             return None
 
-        metric_labels_data = topic_elements[:-1]
-        if len(metric_labels_data) % 2 != 0:
-            raise ValueError(f"Labels extracted from topic are not an even number of elements: {metric_labels_data}")
-
-        # Split labels data into keys and values
-        metric_labels = {}
-        metric_labels_data_iterator = iter(metric_labels_data)
-        for key in metric_labels_data_iterator:
-            metric_labels[key] = next(metric_labels_data_iterator)
-
+        # Remove the last topic element as that is a part of the metric name, not a label
+        metric_labels = extract_labels_from_topic_segments(topic_elements[:-1])
         return metric_labels, topic_elements[-1]
 
     @staticmethod
@@ -649,6 +659,30 @@ class FaikoutMetricsManager(MetricsManager):
     @property
     def mqtt_subscribe_prefix(self) -> str:
         return "Faikout"
+
+
+class Zigbee2MQTTMetricsManager(MetricsManager):
+    @staticmethod
+    def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
+        # Ignore all bridge messages
+        if "bridge/" in topic:
+            return None
+
+        topic_elements = topic.split("/")
+        metric_labels = extract_labels_from_topic_segments(topic_elements)
+        return metric_labels, topic_elements[-1]
+
+    @staticmethod
+    def _extract_metrics(_: str, json_data: Json) -> list[tuple[str, float]] | None:
+        return list(MetricsManager._recursive_metrics_generator(json_data))
+
+    @property
+    def _metric_type(self) -> type[Metric]:
+        return Zigbee2MQTTMetric
+
+    @property
+    def mqtt_subscribe_prefix(self) -> str:
+        return "zigbee2mqtt"
 
 
 class NoPrefixRawValuesManager(MetricsManager):
@@ -860,6 +894,11 @@ def main() -> None:
             exporter_config["filters"],
             exporter_config["cleanup"]["faikout"]["interval"],
             exporter_config["cleanup"]["faikout"]["threshold"],
+        ),
+        Zigbee2MQTTMetricsManager(
+            exporter_config["filters"],
+            exporter_config["cleanup"]["zigbee2mqtt"]["interval"],
+            exporter_config["cleanup"]["zigbee2mqtt"]["threshold"],
         ),
         NoPrefixRawValuesManager(
             exporter_config["filters"],
