@@ -662,10 +662,11 @@ class FaikoutMetricsManager(MetricsManager):
 
 
 class Zigbee2MQTTMetricsManager(MetricsManager):
+    ignore_topic_pattern = re.compile(r"^.*/(?:bridge(?:/.*)?|set)$")
     @staticmethod
     def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
-        # Ignore all bridge and set messages
-        if any(entry in topic for entry in ["/bridge/", "/set"]):
+        # Ignore specific topic patterns
+        if Zigbee2MQTTMetricsManager.ignore_topic_pattern.fullmatch(topic):
             return None
 
         topic_elements = topic.split("/")
