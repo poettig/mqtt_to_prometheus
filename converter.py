@@ -664,13 +664,13 @@ class FaikoutMetricsManager(MetricsManager):
 class Zigbee2MQTTMetricsManager(MetricsManager):
     @staticmethod
     def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
-        # Ignore all bridge messages
-        if "bridge/" in topic:
+        # Ignore all bridge and set messages
+        if any(entry in topic for entry in ["/bridge/", "/set"]):
             return None
 
         topic_elements = topic.split("/")
         metric_labels = extract_labels_from_topic_segments(topic_elements)
-        return metric_labels, topic_elements[-1]
+        return metric_labels, ""
 
     @staticmethod
     def _extract_metrics(_: str, json_data: Json) -> list[tuple[str, float]] | None:
