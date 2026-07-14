@@ -662,14 +662,22 @@ class FaikoutMetricsManager(MetricsManager):
 
 
 class Zigbee2MQTTMetricsManager(MetricsManager):
-    ignore_topic_pattern = re.compile(r"^.*/(?:bridge(?:/.*)?|set)$")
+    ignore_bridge_topic_pattern = re.compile(r"^.*/bridge(?:/.*)?$")
+
     @staticmethod
     def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
         # Ignore specific topic patterns
-        if Zigbee2MQTTMetricsManager.ignore_topic_pattern.fullmatch(topic):
+        if Zigbee2MQTTMetricsManager.ignore_bridge_topic_pattern.fullmatch(topic):
             return None
 
         topic_elements = topic.split("/")
+
+        # Ignore all messages that are not the device info itself
+        # That means: everything with uneven number of topic segments
+        # e.g. ignore "location/house/device/thermometer/level", but allow "location/house/device/thermometer"
+        if len(topic_elements) % 2 == 1:
+            return None
+
         metric_labels = extract_labels_from_topic_segments(topic_elements)
         return metric_labels, ""
 
