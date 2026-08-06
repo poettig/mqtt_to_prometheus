@@ -13,9 +13,8 @@ import threading
 import time
 import traceback
 import types
-import typing
 from collections.abc import Generator
-from typing import ClassVar, Any
+from typing import Any, ClassVar
 
 import paho.mqtt.client as mqtt
 import prometheus_client
@@ -26,9 +25,17 @@ prometheus_client.REGISTRY.unregister(prometheus_client.PROCESS_COLLECTOR)
 prometheus_client.REGISTRY.unregister(prometheus_client.PLATFORM_COLLECTOR)
 prometheus_client.REGISTRY.unregister(prometheus_client.GC_COLLECTOR)
 
-labels_dict_type = dict[str, str]
+Rule = str
+Labels = dict[str, str]
 
 LOGGING_LEVEL_TRACE = 9
+
+
+class Filter:
+    def __init__(self, rules: list[Rule], max_dropped_values: int) -> None:
+        self.rules: list[Rule] = rules
+        self.max_dropped_values = max_dropped_values
+        self.already_dropped_values = 0
 
 
 def setup_logging(quiet: bool, debug: bool, trace: bool, timestamps: bool) -> None:
@@ -81,7 +88,7 @@ class ThreadedManager(abc.ABC):
 
         self._interval = interval
         self._running = False
-        self._thread = threading.Thread(target=self._run)
+        self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.name = name
 
     def _run(self) -> None:
@@ -97,14 +104,11 @@ class ThreadedManager(abc.ABC):
             else:
                 time.sleep(self._interval)
 
-            try:
-                logging.log(LOGGING_LEVEL_TRACE, f"Run iteration loop of thread {self._thread.name}")
-                self.run_iteration()
-            except BaseException as e:
-                self.exception = e
-                self._running = False
-                return
+            # Run iteration
+            logging.log(LOGGING_LEVEL_TRACE, f"Run iteration loop of thread {self._thread.name}")
+            self.run_iteration()
 
+            # Reset sleep time
             start = time.time()
 
         self.teardown()
@@ -120,7 +124,7 @@ class ThreadedManager(abc.ABC):
         self._thread.join()
 
     def prepare(self) -> None:  # noqa: B027
-        # Does does nothing unless overwritten on purpose
+        # Does nothing unless overwritten on purpose
         pass
 
     @abc.abstractmethod
@@ -128,78 +132,30 @@ class ThreadedManager(abc.ABC):
         raise NotImplementedError
 
     def teardown(self) -> None:  # noqa: B027
-        # Does does nothing unless overwritten on purpose
+        # Does nothing unless overwritten on purpose
         pass
 
 
-class Metric(abc.ABC):
-    counters: typing.ClassVar[dict[str, Counter]] = {}  # This is intended to be mutable, all metrics share their gauges
-    counters_lock: threading.Lock = threading.Lock()
+class MetricWithChangeTracking(abc.ABC):
+    _prefix: ClassVar[str]
 
-    gauges: typing.ClassVar[dict[str, Gauge]] = {}  # This is intended to be mutable, all metrics share their gauges
-    gauges_lock: threading.Lock = threading.Lock()
+    def __init__(self, name: str, labels: Labels, is_counter: bool = False, documentation: str = "") -> None:
+        initializer = Counter if is_counter else Gauge
 
-    def __init__(self, name: str, labels: labels_dict_type, is_counter: bool = False, documentation: str = "") -> None:
-        self.last_set: float = 0
-
-        self._name = self._prefix + name
+        self._name = name
         self._labels = labels
-        self._counter = None
-        self._gauge = None
-
-        store: dict[str, Counter | Gauge] = Metric.gauges
-        lock = Metric.gauges_lock
-        counter_or_gauge_initializer = Gauge
-        if is_counter:
-            store = Metric.counters
-            lock = Metric.counters_lock
-            counter_or_gauge_initializer = Counter
-
-        # Lock complete section to not get a TOCTOU race condition
-        with lock:
-            counter_or_gauge = store.get(self._name)
-            if counter_or_gauge is None:
-                # Counter or Gauge does not exist, create it
-                counter_or_gauge = counter_or_gauge_initializer(self._name, documentation, self._labels.keys())
-                store[self._name] = counter_or_gauge
-
-        if is_counter:
-            self._counter = counter_or_gauge
-        else:
-            self._gauge = counter_or_gauge
+        self.last_set: float = 0
+        self._metric = initializer(self.name, documentation, self._labels.keys()).labels(*self._labels.values())
 
     @staticmethod
-    def create_metric_identifier(name: str, labels: labels_dict_type) -> str:
+    def create_metric_identifier(name: str, labels: Labels) -> str:
         # Using sorted(labels.items()) is fine here as values are always strings
         labelset_as_string = [key + "=" + value for key, value in sorted(labels.items())]
         return f"{name}{{{', '.join(labelset_as_string)}}}"
 
     @property
-    @abc.abstractmethod
-    def _prefix(self) -> str:
-        raise NotImplementedError
-
-    @property
-    def _counter_or_gauge(self) -> Counter | Gauge:
-        if self._counter:
-            return self._counter
-
-        if self._gauge:
-            return self._gauge
-
-        raise ValueError("Metric is neither a counter nor a Gauge")
-
-    @property
-    def _metric(self) -> Counter | Gauge:
-        return self._counter_or_gauge.labels(*self._labels.values())
-
-    @property
-    def _lock(self) -> threading.Lock:
-        return Metric.counters_lock if self._counter is not None else Metric.gauges_lock
-
-    @property
     def name(self) -> str:
-        return self._name
+        return self._prefix + self._name
 
     @property
     def full_name(self) -> str:
@@ -216,9 +172,7 @@ class Metric(abc.ABC):
         return f"{self.full_name} {self.value}"
 
     def inc(self, amount: float = 1.0) -> None:
-        with self._lock:
-            self._metric.inc(amount)
-
+        self._metric.inc(amount)
         self.last_set = time.time()
         logging.debug(f"Increased {self.full_name} by {amount} to {self.value}")
 
@@ -226,19 +180,15 @@ class Metric(abc.ABC):
         if isinstance(self._metric, Counter):
             raise ValueError(f"Tried to decrease counter metric {self.full_name}")
 
-        with self._lock:
-            self._metric.dec(amount)
-
+        self._metric.dec(amount)
         self.last_set = time.time()
         logging.debug(f"Decreased {self.full_name} by {amount} to {self.value}")
 
     def set(self, value: float) -> None:
-        if self._gauge is None:
+        if isinstance(self._metric, Counter):
             raise ValueError(f"Tried to set counter metric {self.full_name}")
 
-        with self._lock:
-            self._metric.set(value)
-
+        self._metric.set(value)
         self.last_set = time.time()
         logging.debug(f"Set {self.full_name} to {self.value}")
 
@@ -248,72 +198,59 @@ class Metric(abc.ABC):
             logging.debug(f"Tried to remove {self.full_name} but it is currently not set")
             return False
 
-        with self._lock:
-            self._counter_or_gauge.remove(*self._labels.values())
-
+        self._metric.remove(*self._labels.values())
         self.last_set = 0
         logging.debug(f"Removed {self.full_name}")
 
         return True
 
 
-class TasmotaMetric(Metric):
-    @property
-    def _prefix(self) -> str:
-        return "tasmota_"
+class TasmotaMetricWithChangeTracking(MetricWithChangeTracking):
+    _prefix = "tasmota_"
 
 
-class ShellyMetric(Metric):
-    @property
-    def _prefix(self) -> str:
-        return "shelly_"
+class ShellyMetricWithChangeTracking(MetricWithChangeTracking):
+    _prefix = "shelly_"
 
 
-class FaikoutMetric(Metric):
-    @property
-    def _prefix(self) -> str:
-        return "faikout_"
+class FaikoutMetricWithChangeTracking(MetricWithChangeTracking):
+    _prefix = "faikout_"
 
 
-class Zigbee2MQTTMetric(Metric):
-    @property
-    def _prefix(self) -> str:
-        return "zigbee2mqtt_"
+class Zigbee2MQTTMetricWithChangeTracking(MetricWithChangeTracking):
+    _prefix = "zigbee2mqtt_"
 
 
-class NoPrefixMetric(Metric):
-    @property
-    def _prefix(self) -> str:
-        return ""
+class NoPrefixMetricWithChangeTracking(MetricWithChangeTracking):
+    _prefix = ""
 
 
 class MetricsManager(ThreadedManager, abc.ABC):
+    _last_update_gauge: Gauge | None = None
+    _last_update_gauge_lock: threading.Lock = threading.Lock()
+
     def __init__(
         self,
         filters: dict,
         cleanup_interval: int,
         cleanup_threshold: int,
     ) -> None:
-        self._message_counter: Metric | None = None
-        self._drop_counter: Metric | None = None
-        self._metrics: dict[str, Metric] = {}
-        self._labels = None
-        self._filters = {}
+        self._metrics: dict[str, MetricWithChangeTracking] = {}
+        self._filters: dict[str, Filter] = {}
         self._cleanup_threshold = cleanup_threshold
 
         for entry in filters:
             for metric_name in entry["metric_names"]:
-                self._filters[metric_name] = {
-                    "rules": entry["rules"],
-                    "max_dropped_values": entry["max_dropped_values"],
-                    "already_dropped_values": 0,
-                }
+                self._filters[metric_name] = Filter(
+                    rules=entry["rules"],
+                    max_dropped_values=entry["max_dropped_values"],
+                )
 
         super().__init__(self.__class__.__name__, cleanup_interval)
 
     @property
     @abc.abstractmethod
-    def _metric_type(self) -> type[Metric]:
+    def _metric_type(self) -> type[MetricWithChangeTracking]:
         raise NotImplementedError
 
     @property
@@ -321,9 +258,8 @@ class MetricsManager(ThreadedManager, abc.ABC):
     def mqtt_subscribe_prefix(self) -> str:
         raise NotImplementedError
 
-    @staticmethod
     @abc.abstractmethod
-    def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
+    def _extract_labels(self, topic: str) -> tuple[Labels, str] | None:
         """
         Extracts labels for metrics from the given topic.
 
@@ -393,25 +329,36 @@ class MetricsManager(ThreadedManager, abc.ABC):
                 elif isinstance(value, int | float):
                     yield MetricsManager._create_metric_with_value(key, value, prefix)
 
-    def get_metric(self, name: str, labels: labels_dict_type) -> Metric:
-        # A specific metric is identified by its name and labels
-        identifier = Metric.create_metric_identifier(name, labels)
-        metric = self._metrics.get(identifier)
-        if metric is None:
-            metric = self._metric_type(name, labels)
-            self._metrics[identifier] = metric
-            logging.debug(f"Created new metric {metric.full_name}")
+    def _get_metric(
+        self,
+        metric_name: str,
+        labels: dict[str, str],
+        is_counter: bool = False,
+        documentation: str = "",
+    ) -> MetricWithChangeTracking:
+        identifier = MetricWithChangeTracking.create_metric_identifier(metric_name, labels)
+        if identifier in self._metrics:
+            # Use already stored metric from cache
+            return self._metrics[identifier]
 
+        # Create new metric and store
+        metric = self._metric_type(
+            CamelToSnakeConverter.convert(metric_name),
+            labels,
+            is_counter=is_counter,
+            documentation=documentation,
+        )
+        self._metrics[identifier] = metric
         return metric
 
-    def should_be_filtered(self, metric: Metric, new_value: float) -> bool:
+    def should_be_filtered(self, metric: MetricWithChangeTracking, new_value: float) -> bool:
         filter_info = self._filters.get(metric.name)
         if filter_info is None:
             # No filter defined
             return False
 
         filter_messages = []
-        for rule in filter_info["rules"]:
+        for rule in filter_info.rules:
             rule_type, rule_value = rule.split(":")
             rule_value = float(rule_value)
 
@@ -439,16 +386,16 @@ class MetricsManager(ThreadedManager, abc.ABC):
 
         # No filter was hit
         if len(filter_messages) == 0:
-            if filter_info["already_dropped_values"] != 0:
-                filter_info["already_dropped_values"] = 0
+            if filter_info.already_dropped_values != 0:
+                filter_info.already_dropped_values = 0
                 logging.info(f"No filter hit for {metric}, reset drop counter.")
 
             return False
 
-        filter_info["already_dropped_values"] += 1
-        if filter_info["already_dropped_values"] >= filter_info["max_dropped_values"]:
+        filter_info.already_dropped_values += 1
+        if filter_info.already_dropped_values >= filter_info.max_dropped_values:
             # Always accept when the maximum dropped values are reached
-            filter_info["already_dropped_values"] = 0
+            filter_info.already_dropped_values = 0
             logging.warning(
                 f"Accepted filtered value {metric} because maximum drops are reached. Drop reasons would have been:"
             )
@@ -458,7 +405,7 @@ class MetricsManager(ThreadedManager, abc.ABC):
             return False
 
         logging.warning(
-            f"[{filter_info['already_dropped_values']}/{filter_info['max_dropped_values']}]"
+            f"[{filter_info.already_dropped_values}/{filter_info.max_dropped_values}]"
             f" Filtered new value for {metric.full_name}. Reasons:"
         )
         for filter_message in filter_messages:
@@ -481,40 +428,53 @@ class MetricsManager(ThreadedManager, abc.ABC):
             logging.debug(f"Could not extract any metric from {remaining_topic} and {json_data}")
             return
 
-        # Initialize counters if not done yet
-        if self._labels is None:
-            self._message_counter = self._metric_type(
-                "processed_messages",
-                labels,
-                documentation="MQTT messages processed for this topic.",
-                is_counter=True,
-            )
-            self._drop_counter = self._metric_type(
-                "dropped_values",
-                labels,
-                documentation="Number of metric values dropped because of a filter hit.",
-                is_counter=True,
-            )
-        elif set(self._labels.keys()) != set(labels.keys()):
-            raise ValueError(
-                f"Label keys [{', '.join(labels.keys())}] "
-                f"do not match the stored label keys [{', '.join(labels.keys())}] "
-                f"from the first message."
-            )
+        message_counter = self._get_metric(
+            "processed_messages",
+            labels,
+            is_counter=True,
+            documentation="Number of MQTT messages processed for this topic.",
+        )
+        drop_counter = self._get_metric(
+            "dropped_values",
+            labels,
+            is_counter=True,
+            documentation="Number of metric values dropped because of a filter hit.",
+        )
 
-        self._message_counter.inc()
-
+        message_counter.inc()
         for metric_name, value in metrics_data:
-            metric = self.get_metric(CamelToSnakeConverter.convert(metric_name), labels)
+            metric = self._get_metric(metric_name, labels)
 
             # Drop update if filtered, else set the gauge to the new value
             if self.should_be_filtered(metric, value):
-                self._drop_counter.inc()
+                drop_counter.inc()
             else:
                 metric.set(value)
 
         # Update "last received" metric for topic which also is never filtered
-        self.get_metric("last_update", {**labels, "topic": remaining_topic}).set(time.time())
+
+        # Prepare labels
+        last_update_labels = {
+            **labels,
+            "topic": remaining_topic,
+            "type": re.sub(r"_$", "", self._metric_type._prefix),
+        }
+
+        # Create last update gauge metric if not done yet
+        if MetricsManager._last_update_gauge is None:
+            with MetricsManager._last_update_gauge_lock:
+                # In case multiple threads passed the outer check and started waiting for a lock,
+                # ensure that only one thread creates the metric
+                if MetricsManager._last_update_gauge is None:
+                    MetricsManager._last_update_gauge = Gauge(
+                        "last_update",
+                        "Last update of metric with a specific labelset",
+                        last_update_labels.keys(),
+                    )
+
+        # Set last update metric value
+        assert MetricsManager._last_update_gauge is not None
+        MetricsManager._last_update_gauge.labels(*last_update_labels.values()).set(time.time())
 
     def run_iteration(self) -> None:
         logging.debug("Running metrics cleanup...")
@@ -530,8 +490,7 @@ class TasmotaMetricsManager(MetricsManager):
         "SENSOR",
     )
 
-    @staticmethod
-    def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
+    def _extract_labels(self, topic: str) -> tuple[Labels, str] | None:
         topic_elements = topic.split("/")
         if topic_elements[-1] not in TasmotaMetricsManager.message_types_to_parse:
             return None
@@ -541,12 +500,12 @@ class TasmotaMetricsManager(MetricsManager):
         return metric_labels, topic_elements[-1]
 
     @staticmethod
-    def _extract_metrics(_: str, json_data: Json) -> list[tuple[str, float]] | None:
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]]:
         return list(MetricsManager._recursive_metrics_generator(json_data))
 
     @property
-    def _metric_type(self) -> type[Metric]:
-        return TasmotaMetric
+    def _metric_type(self) -> type[MetricWithChangeTracking]:
+        return TasmotaMetricWithChangeTracking
 
     @property
     def mqtt_subscribe_prefix(self) -> str:
@@ -556,10 +515,9 @@ class TasmotaMetricsManager(MetricsManager):
 class ShellyMetricsManager(MetricsManager):
     message_types_to_parse = ("status",)
 
-    @staticmethod
-    def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
+    def _extract_labels(self, topic: str) -> tuple[Labels, str] | None:
         found_message_type = None
-        for message_type in ShellyMetricsManager.message_types_to_parse:
+        for message_type in self.message_types_to_parse:
             if f"/{message_type}" in topic:
                 found_message_type = message_type
                 break
@@ -589,7 +547,7 @@ class ShellyMetricsManager(MetricsManager):
         return metric_labels, "/".join(metric_labels_data_iterator)
 
     @staticmethod
-    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]] | None:
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]]:
         result = []
         for metric_name, value in MetricsManager._recursive_metrics_generator(json_data):
             metric_name_prefix = None
@@ -607,8 +565,8 @@ class ShellyMetricsManager(MetricsManager):
         return result
 
     @property
-    def _metric_type(self) -> type[Metric]:
-        return ShellyMetric
+    def _metric_type(self) -> type[MetricWithChangeTracking]:
+        return ShellyMetricWithChangeTracking
 
     @property
     def mqtt_subscribe_prefix(self) -> str:
@@ -624,9 +582,9 @@ class FaikoutMetricsManager(MetricsManager):
         super().__init__(filters, cleanup_interval, cleanup_threshold)
         self.location = location
 
-    def _extract_labels(self, topic: str) -> tuple[labels_dict_type, str] | None:
+    def _extract_labels(self, topic: str) -> tuple[Labels, str] | None:
         found_message_type = None
-        for message_type in ShellyMetricsManager.message_types_to_parse:
+        for message_type in self.message_types_to_parse:
             if f"/{message_type}" in topic:
                 found_message_type = message_type
                 break
@@ -639,7 +597,7 @@ class FaikoutMetricsManager(MetricsManager):
         return {"location": self.location, "device": topic_elements[0]}, ""
 
     @staticmethod
-    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]] | None:
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]]:
         # Convert mode and fan speed to a number
         if json_data.get("mode"):
             json_data["mode"] = FaikoutMetricsManager.mode_mapping[json_data["mode"]]
@@ -653,8 +611,8 @@ class FaikoutMetricsManager(MetricsManager):
         return result
 
     @property
-    def _metric_type(self) -> type[Metric]:
-        return FaikoutMetric
+    def _metric_type(self) -> type[MetricWithChangeTracking]:
+        return FaikoutMetricWithChangeTracking
 
     @property
     def mqtt_subscribe_prefix(self) -> str:
@@ -664,17 +622,16 @@ class FaikoutMetricsManager(MetricsManager):
 class Zigbee2MQTTMetricsManager(MetricsManager):
     ignore_bridge_topic_pattern = re.compile(r"^.*/bridge(?:/.*)?$")
 
-    @staticmethod
-    def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
+    def _extract_labels(self, topic: str) -> tuple[Labels, str] | None:
         # Ignore specific topic patterns
-        if Zigbee2MQTTMetricsManager.ignore_bridge_topic_pattern.fullmatch(topic):
+        if self.ignore_bridge_topic_pattern.fullmatch(topic):
             return None
 
         topic_elements = topic.split("/")
 
         # Ignore all messages that are not the device info itself
-        # That means: everything with uneven number of topic segments
-        # e.g. ignore "location/house/device/thermometer/level", but allow "location/house/device/thermometer"
+        # That means: everything with an uneven number of topic segments
+        # e.g., ignore "location/house/device/thermometer/level", but allow "location/house/device/thermometer"
         if len(topic_elements) % 2 == 1:
             return None
 
@@ -682,12 +639,12 @@ class Zigbee2MQTTMetricsManager(MetricsManager):
         return metric_labels, ""
 
     @staticmethod
-    def _extract_metrics(_: str, json_data: Json) -> list[tuple[str, float]] | None:
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]]:
         return list(MetricsManager._recursive_metrics_generator(json_data))
 
     @property
-    def _metric_type(self) -> type[Metric]:
-        return Zigbee2MQTTMetric
+    def _metric_type(self) -> type[MetricWithChangeTracking]:
+        return Zigbee2MQTTMetricWithChangeTracking
 
     @property
     def mqtt_subscribe_prefix(self) -> str:
@@ -696,15 +653,14 @@ class Zigbee2MQTTMetricsManager(MetricsManager):
 
 class NoPrefixRawValuesManager(MetricsManager):
     @property
-    def _metric_type(self) -> type[Metric]:
-        return NoPrefixMetric
+    def _metric_type(self) -> type[MetricWithChangeTracking]:
+        return NoPrefixMetricWithChangeTracking
 
     @property
     def mqtt_subscribe_prefix(self) -> str:
         return "noprefixraw"
 
-    @staticmethod
-    def _extract_labels(topic: str) -> tuple[labels_dict_type, str] | None:
+    def _extract_labels(self, topic: str) -> tuple[Labels, str] | None:
         topic_elements = topic.split("/")
         if len(topic_elements) % 2 == 0:
             raise ValueError(f"Topic leaves no metric name at the end: {topic_elements}")
@@ -719,7 +675,7 @@ class NoPrefixRawValuesManager(MetricsManager):
         return metric_labels, topic_elements[-1]
 
     @staticmethod
-    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]] | None:
+    def _extract_metrics(remaining_topic: str, json_data: Json) -> list[tuple[str, float]]:
         if not isinstance(json_data, str | float | int):
             raise ValueError(f"Can't extract metric with non-float input {type(json_data)}")
 
@@ -771,7 +727,7 @@ class MQTTManager(ThreadedManager):
         client: mqtt.Client,
         _: None,
         __: None,
-        reason_code: mqtt.Properties | None,
+        reason_code: mqtt.Properties,
         ___: None,
     ) -> None:
         if reason_code == 0:
@@ -836,8 +792,6 @@ def main() -> None:
     managers = []
 
     def exit_handler(signum: int = -1, _: types.FrameType | None = None) -> None:
-        global should_exit
-        should_exit = True
         exit_code = 0
         if signum == signal.SIGINT:
             logging.info("SIGINT received, exiting...")
@@ -929,7 +883,7 @@ def main() -> None:
         )
     )
 
-    # Setup signal handling
+    # Set up signal handling
     signal.signal(signal.SIGINT, exit_handler)
     signal.signal(signal.SIGTERM, exit_handler)
 
@@ -939,7 +893,7 @@ def main() -> None:
 
     prometheus_client.start_http_server(exporter_config["port"], exporter_config["bind_ip"])
 
-    # Check for exceptions and exit requests periodically
+    # Check for exit requests periodically
     while True:
         for manager in managers:
             if manager.exception:
